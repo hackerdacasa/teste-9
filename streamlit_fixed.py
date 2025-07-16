@@ -1,18 +1,16 @@
 import streamlit as st
 import yt_dlp
 import os
-import re
 import threading
 import time
 from datetime import datetime
 import sqlite3
-import shutil
 import subprocess
 from pathlib import Path
 
 # Configuração da página
 st.set_page_config(
-    page_title="🎵 Modern MP3 Converter",
+    page_title="🎵 YouTube MP3 Converter",
     page_icon="🎵",
     layout="wide"
 )
@@ -74,13 +72,6 @@ UPLOADS_DIR = "uploads"
 for directory in [DOWNLOADS_DIR, UPLOADS_DIR]:
     if not os.path.exists(directory):
         os.makedirs(directory)
-
-# FFmpeg - Caminho fixo do Nix
-FFMPEG_PATH = "/nix/store/3zc5jbvqzrn8zmva4fx5p0nh4yy03wk4-ffmpeg-6.1.1-bin/bin/ffmpeg"
-FFPROBE_PATH = "/nix/store/3zc5jbvqzrn8zmva4fx5p0nh4yy03wk4-ffmpeg-6.1.1-bin/bin/ffprobe"
-
-# Verificar se FFmpeg existe
-FFMPEG_AVAILABLE = os.path.exists(FFMPEG_PATH) and os.path.exists(FFPROBE_PATH)
 
 # Banco de dados
 def init_db():
@@ -181,45 +172,6 @@ def format_file_size(size_bytes):
     s = round(size_bytes / p, 2)
     return f"{s} {size_name[i]}"
 
-def convert_local_to_mp3(file_path, download_id):
-    try:
-        update_download(download_id, status='downloading', progress=10)
-        
-        file_name = os.path.basename(file_path)
-        name_without_ext = os.path.splitext(file_name)[0]
-        
-        output_filename = f"{name_without_ext}.mp3"
-        output_path = os.path.join(DOWNLOADS_DIR, output_filename)
-        
-        update_download(download_id, title=name_without_ext, filename=output_filename, progress=30)
-        
-        cmd = [
-            FFMPEG_PATH, '-i', file_path,
-            '-vn', '-acodec', 'libmp3lame',
-            '-b:a', '320k', '-ar', '44100', '-ac', '2',
-            '-y', output_path
-        ]
-        
-        update_download(download_id, progress=50)
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            file_size = os.path.getsize(output_path)
-            file_size_str = format_file_size(file_size)
-            
-            try:
-                os.remove(file_path)
-            except:
-                pass
-            
-            update_download(download_id, status='completed', progress=100, file_size=file_size_str)
-        else:
-            update_download(download_id, status='failed', error_message=f"Erro FFmpeg: {result.stderr}")
-    
-    except Exception as e:
-        update_download(download_id, status='failed', error_message=f"Erro: {str(e)}")
-
 def download_youtube_video(download_id, url, format_type, quality):
     try:
         update_download(download_id, status='downloading', progress=5)
@@ -236,20 +188,14 @@ def download_youtube_video(download_id, url, format_type, quality):
         else:
             format_selector = 'best'
         
+        # Configuração básica sem FFmpeg
         ydl_opts = {
             'outtmpl': os.path.join(DOWNLOADS_DIR, '%(title)s.%(ext)s'),
-            'ffmpeg_location': FFMPEG_PATH,
         }
         
         if format_type == 'audio':
-            ydl_opts.update({
-                'format': 'bestaudio',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '320',
-                }],
-            })
+            # Baixar diretamente o melhor áudio disponível
+            ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
         else:
             ydl_opts['format'] = format_selector
         
@@ -281,20 +227,66 @@ def download_youtube_video(download_id, url, format_type, quality):
     except Exception as e:
         update_download(download_id, status='failed', error_message=str(e))
 
+def convert_local_to_mp3(file_path, download_id):
+    try:
+        update_download(download_id, status='downloading', progress=10)
+        
+        file_name = os.path.basename(file_path)
+        name_without_ext = os.path.splitext(file_name)[0]
+        
+        output_filename = f"{name_without_ext}.mp3"
+        output_path = os.path.join(DOWNLOADS_DIR, output_filename)
+        
+        update_download(download_id, title=name_without_ext, filename=output_filename, progress=30)
+        
+        # Usar FFmpeg do sistema
+        cmd = [
+            'ffmpeg', '-i', file_path,
+            '-vn', '-acodec', 'libmp3lame',
+            '-b:a', '320k', '-ar', '44100', '-ac', '2',
+            '-y', output_path
+        ]
+        
+        update_download(download_id, progress=50)
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            file_size = os.path.getsize(output_path)
+            file_size_str = format_file_size(file_size)
+            
+            try:
+                os.remove(file_path)
+            except:
+                pass
+            
+            update_download(download_id, status='completed', progress=100, file_size=file_size_str)
+        else:
+            update_download(download_id, status='failed', error_message=f"Erro FFmpeg: {result.stderr}")
+    
+    except Exception as e:
+        update_download(download_id, status='failed', error_message=f"Erro: {str(e)}")
+
 def main():
     init_db()
     
-    st.markdown('<h1 class="main-title">🎵 Modern MP3 Converter</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-title">🎵 YouTube MP3 Converter</h1>', unsafe_allow_html=True)
     
     # Sidebar
     with st.sidebar:
         st.markdown("### 🎛️ Controles")
         
-        # Status FFmpeg
-        if FFMPEG_AVAILABLE:
-            st.success("✅ FFmpeg Funcionando")
+        # Verificar FFmpeg
+        try:
+            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+            ffmpeg_available = result.returncode == 0
+        except:
+            ffmpeg_available = False
+        
+        if ffmpeg_available:
+            st.success("✅ FFmpeg OK")
         else:
-            st.error("❌ FFmpeg não encontrado")
+            st.warning("⚠️ FFmpeg não encontrado")
         
         # Tipo de conversão
         conversion_type = st.radio(
@@ -308,56 +300,55 @@ def main():
             # Formato
             format_type = st.selectbox(
                 "Formato:",
-                ["🎵 MP3", "📹 MP4"]
+                ["🎵 Áudio (M4A)", "📹 Vídeo (MP4)"]
             )
             
             # Qualidade
-            if "MP4" in format_type:
+            if "Vídeo" in format_type:
                 quality = st.selectbox(
                     "Qualidade:",
                     ["Melhor", "4K (2160p)", "1080p", "720p", "480p"]
                 )
             else:
-                quality = "320kbps"
-                st.info("🎵 Áudio: 320kbps")
+                quality = "Melhor"
+                st.info("🎵 Áudio: Melhor qualidade")
             
             url = st.text_input("Link:", placeholder="https://www.youtube.com/watch?v=...")
             
             if st.button("🚀 Download", type="primary"):
-                if FFMPEG_AVAILABLE:
-                    if url and is_valid_url(url):
-                        platform = detect_platform(url)
-                        if platform == 'youtube':
-                            format_selected = 'audio' if 'MP3' in format_type else 'video'
-                            download_id = add_download(url, platform, format_selected, quality)
-                            threading.Thread(
-                                target=download_youtube_video,
-                                args=(download_id, url, format_selected, quality)
-                            ).start()
-                            st.success("🎉 Iniciado!")
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error("❌ Link inválido")
+                if url and is_valid_url(url):
+                    platform = detect_platform(url)
+                    if platform == 'youtube':
+                        format_selected = 'audio' if 'Áudio' in format_type else 'video'
+                        download_id = add_download(url, platform, format_selected, quality)
+                        threading.Thread(
+                            target=download_youtube_video,
+                            args=(download_id, url, format_selected, quality)
+                        ).start()
+                        st.success("🎉 Download iniciado!")
+                        time.sleep(1)
+                        st.rerun()
                     else:
-                        st.error("❌ Insira um link")
+                        st.error("❌ Link deve ser do YouTube")
                 else:
-                    st.error("❌ FFmpeg indisponível")
+                    st.error("❌ Insira um link válido")
         
         else:  # Arquivo Local
-            st.markdown("### 📁 Converter")
+            st.markdown("### 📁 Converter para MP3")
             
-            uploaded_file = st.file_uploader(
-                "Arquivo:",
-                type=['mp4', 'avi', 'mov', 'wmv', 'flv', 'mkv', 'webm', 'm4v']
-            )
-            
-            if uploaded_file is not None:
-                file_size = len(uploaded_file.getvalue())
-                st.info(f"📄 {uploaded_file.name} ({format_file_size(file_size)})")
+            if not ffmpeg_available:
+                st.error("❌ FFmpeg necessário para conversão")
+            else:
+                uploaded_file = st.file_uploader(
+                    "Arquivo:",
+                    type=['mp4', 'avi', 'mov', 'wmv', 'flv', 'mkv', 'webm', 'm4v', 'm4a', 'webm']
+                )
                 
-                if st.button("🎵 Converter MP3", type="primary"):
-                    if FFMPEG_AVAILABLE:
+                if uploaded_file is not None:
+                    file_size = len(uploaded_file.getvalue())
+                    st.info(f"📄 {uploaded_file.name} ({format_file_size(file_size)})")
+                    
+                    if st.button("🎵 Converter para MP3", type="primary"):
                         file_path = os.path.join(UPLOADS_DIR, uploaded_file.name)
                         with open(file_path, "wb") as f:
                             f.write(uploaded_file.getbuffer())
@@ -369,11 +360,9 @@ def main():
                             args=(file_path, download_id)
                         ).start()
                         
-                        st.success("🎉 Iniciado!")
+                        st.success("🎉 Conversão iniciada!")
                         time.sleep(1)
                         st.rerun()
-                    else:
-                        st.error("❌ FFmpeg indisponível")
     
     # Downloads
     st.markdown("## 📋 Downloads")
@@ -401,13 +390,13 @@ def main():
                 
                 with col2:
                     if status == 'completed':
-                        st.markdown('<span class="status-completed">✅ OK</span>', unsafe_allow_html=True)
+                        st.markdown('<span class="status-completed">✅ Completo</span>', unsafe_allow_html=True)
                     elif status == 'failed':
                         st.markdown('<span class="status-failed">❌ Erro</span>', unsafe_allow_html=True)
                     elif status == 'downloading':
                         st.markdown('<span class="status-downloading">⏬ Baixando</span>', unsafe_allow_html=True)
                     else:
-                        st.markdown('<span class="status-pending">⏳ Aguardando</span>', unsafe_allow_html=True)
+                        st.markdown('<span class="status-pending">⏳ Pendente</span>', unsafe_allow_html=True)
                 
                 with col3:
                     if st.button("🗑️", key=f"delete_{id}"):
@@ -425,9 +414,18 @@ def main():
                     file_path = os.path.join(DOWNLOADS_DIR, filename)
                     if os.path.exists(file_path):
                         with open(file_path, "rb") as file:
-                            mime_type = "audio/mpeg" if filename.endswith('.mp3') else "video/mp4"
+                            # Detectar tipo de arquivo
+                            if filename.endswith('.mp3'):
+                                mime_type = "audio/mpeg"
+                            elif filename.endswith('.m4a'):
+                                mime_type = "audio/mp4"
+                            elif filename.endswith('.mp4'):
+                                mime_type = "video/mp4"
+                            else:
+                                mime_type = "application/octet-stream"
+                            
                             st.download_button(
-                                label="⬇️ Download",
+                                label="⬇️ Baixar",
                                 data=file,
                                 file_name=filename,
                                 mime=mime_type,
@@ -439,11 +437,12 @@ def main():
                 
                 st.markdown('</div>', unsafe_allow_html=True)
         
+        # Auto-refresh se há downloads em progresso
         if any(download[6] == 'downloading' for download in downloads):
             time.sleep(2)
             st.rerun()
     else:
-        st.info("🎵 Nenhum download. Use o painel lateral.")
+        st.info("🎵 Nenhum download ainda. Use o painel lateral para começar.")
 
 if __name__ == "__main__":
     main()
